@@ -40,6 +40,41 @@
     return Math.max(1, Math.round(row.tvl_usd * multipleOf(row, model) * growthMult * maturity));
   }
 
+  // The row's own arithmetic, spelled out for the detail view: the TVL it starts from, the multiple its
+  // category measured, the growth and maturity multipliers, and the product they make. The page reads
+  // these from the row (board.json writes them), so the drawer shows the same numbers the board ranks on.
+  function noteOf(row) {
+    var mm = (row && row.model) || {};
+    var growthMult = typeof mm.growth_multiplier === 'number' ? mm.growth_multiplier : row.growth_multiplier;
+    var maturityMult = typeof mm.maturity_multiplier === 'number' ? mm.maturity_multiplier : row.maturity_multiplier;
+    return {
+      multiple: multipleOf(row, DATA.model),
+      categoryMultiple: typeof mm.category_multiple === 'number' ? mm.category_multiple : null,
+      comparables: typeof mm.category_comparables === 'number' ? mm.category_comparables : null,
+      basis: typeof mm.multiple_basis === 'string' && mm.multiple_basis ? mm.multiple_basis : null,
+      fallback: mm.category_fallback === true,
+      growthMult: growthMult,
+      maturityMult: maturityMult,
+      product: row.tvl_usd * multipleOf(row, DATA.model) * growthMult * maturityMult
+    };
+  }
+  // board.json is built from multipliers before they are rounded to four decimals for display, so a
+  // recomputation from the printed figures lands a hair off. Five basis points is that rounding, not a
+  // second model; anything wider is a real disagreement between the data file and the board.
+  function agreesWithBoard(value, boardValue) {
+    if (typeof boardValue !== 'number' || !isFinite(boardValue) || boardValue <= 0) return false;
+    return Math.abs(value - boardValue) <= Math.max(2, boardValue * 0.0005);
+  }
+  // The basis sentence as prose: the snapshot's own words with the two abbreviations opened up, a capital
+  // and a full stop. The figures inside it are never touched.
+  function basisSentence(raw) {
+    var s = String(raw).trim().replace(/mcap\/TVL/g, 'market cap to TVL');
+    if (!s) return '';
+    s = s.charAt(0).toUpperCase() + s.slice(1);
+    if (!/[.!?]$/.test(s)) s += '.';
+    return s;
+  }
+
   function el(tag, attrs) {
     var node = document.createElement(tag);
     if (attrs) {
@@ -297,7 +332,7 @@
       var key = r.category || 'Uncategorised';
       var prev = byCat[key];
       if (!prev) {
-        byCat[key] = { multiple: mm.category_multiple, n: mm.category_comparables, rows: 1, implied: r.implied_value_usd };
+        byCat[key] = { multiple: mm.category_multiple, n: mm.category_comparables, rows: 1, implied: r.implied_value_usd, fallback: mm.category_fallback === true };
       } else {
         prev.rows += 1;
         prev.implied += r.implied_value_usd;
@@ -312,9 +347,9 @@
       var c = byCat[k];
       var share = totalImplied > 0 ? (c.implied / totalImplied) * 100 : 0;
       return el('tr', null,
-        el('td', { text: k }),
-        el('td', { class: 'num', text: 'x' + Number(c.multiple).toFixed(3) }),
-        el('td', { class: 'num', text: c.n === undefined || c.n === null ? 'fallback' : String(c.n) }),
+        el('td', { text: c.fallback ? k + ' (all-market)' : k }),
+        el('td', { class: 'num', text: 'x' + Number(c.multiple).toFixed(3) + (c.fallback ? '*' : '') }),
+        el('td', { class: 'num', text: c.n === undefined || c.n === null ? 'fallback' : String(c.n) + (c.fallback ? ' all-market' : '') }),
         el('td', { class: 'num', text: String(c.rows) }),
         el('td', { class: 'num', text: share.toFixed(1) + '%' })
       );
@@ -372,7 +407,11 @@
         el('div', null, el('span', { text: 'Maturity multiplier' }), el('b', { class: 'num', text: String(row.maturity_multiplier) })),
         el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
-      el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the same function scores every protocol. The page recomputes this row as ' + fmtUsd(impliedOf(row, DATA.model)) + (impliedOf(row, DATA.model) === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate, not a price.' })
+      el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the same function scores every protocol. The page recomputes this row as ' + fmtUsd(impliedOf(row, DATA.model)) + (agreesWithBoard(impliedOf(row, DATA.model), row.implied_value_usd) ? ', which is the number board.json carries once the multipliers are multiplied before they are rounded for display.' : ', which differs from the board: the data file and the board disagree, not the formula.') + ' This is an estimate, not a price.' })
+    ));
+    dialog.appendChild(el('section', { class: 'detail-section' },
+      el('h3', { text: 'Why this number' }),
+      whySection(row)
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan' }),
@@ -388,6 +427,44 @@
     } else {
       dialog.setAttribute('open', '');
     }
+  }
+
+  // The measured numbers, line by line, then the whole product as one readable expression. Every figure
+  // here is the one board.json ranked on; nothing is re-estimated for the drawer.
+  function whySection(row) {
+    var n = noteOf(row);
+    var cat = row.category || 'Uncategorised';
+    var comparables = n.comparables === null
+      ? 'no measured comparables in this data file'
+      : n.comparables + ' token-issuing comparable' + (n.comparables === 1 ? '' : 's');
+    // A category with fewer than three token-issuing protocols is priced off the all-market median, so the
+    // label must not pass that number off as the sector's own.
+    var multipleLabel = n.fallback
+      ? 'All-market multiple (' + cat + ' has too few comparables for its own median)'
+      : 'Category multiple, ' + cat;
+    var growthLabel = row.change_7d === null || row.change_7d === undefined
+      ? 'No seven-day change recorded, counted as 0%, sets the growth multiplier'
+      : 'Seven-day growth ' + fmtPct(row.change_7d) + ' sets the growth multiplier';
+    var product = n.product;
+    var rounded = Math.max(1, Math.round(product));
+    var agrees = agreesWithBoard(rounded, row.implied_value_usd);
+    var driftPct = row.implied_value_usd > 0 ? (Math.abs(rounded - row.implied_value_usd) / row.implied_value_usd) * 100 : 0;
+    return el('div', null,
+      el('div', { class: 'equation' },
+        el('div', null, el('span', { text: 'TVL, from the snapshot' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) })),
+        el('div', null, el('span', { text: multipleLabel }), el('b', { class: 'num', text: 'x' + n.multiple.toFixed(4) + ' (' + comparables + ')' })),
+        el('div', null, el('span', { text: growthLabel }), el('b', { class: 'num', text: Number(n.growthMult).toFixed(4) })),
+        el('div', null, el('span', { text: 'Age ' + fmtAge(row.age_days) + ' gives the maturity multiplier' }), el('b', { class: 'num', text: Number(n.maturityMult).toFixed(4) })),
+        el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
+      ),
+      el('div', { class: 'formula', text: fmtUsd(row.tvl_usd) + ' x ' + n.multiple.toFixed(4) + ' x ' + Number(n.growthMult).toFixed(4) + ' x ' + Number(n.maturityMult).toFixed(4) + ' = ' + fmtUsd(product) + ', rounded to ' + fmtUsd(rounded) }),
+      el('p', { class: 'sub', text: n.basis === null
+        ? 'This data file carries no basis sentence for the multiple: the row was written before the board kept one, so the sentence is left out rather than invented.'
+        : 'Basis: ' + basisSentence(n.basis) }),
+      el('p', { class: 'sub', text: agrees
+        ? 'board.json carries ' + fmtUsd(row.implied_value_usd) + ' for this row. The multipliers above are printed to four decimals, so the product reproduces it to ' + driftPct.toFixed(3) + '%, inside rounding and not a second estimate.'
+        : 'The product of the printed multipliers is ' + fmtUsd(rounded) + ', but board.json carries ' + fmtUsd(row.implied_value_usd) + ': a gap of ' + driftPct.toFixed(2) + '%, too wide for rounding. The data file and the board are out of step, and the board is the one ranked.' })
+    );
   }
 
   function render() {

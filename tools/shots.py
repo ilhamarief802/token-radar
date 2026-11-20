@@ -21,7 +21,9 @@ TARGET_LOW, TARGET_HIGH = 300_000, 350_000
 
 VIEWS = [
     ("board.png", "", False),
-    ("detail.png", "#p=steakhouse-financial", False),
+    # A row whose category median was measured from its own comparables (Dexs, 11 of them), so the shot
+    # shows the drawer's arithmetic on a real category multiple rather than on the all-market fallback.
+    ("detail.png", "#p=bittensor-dtao", False),
     ("filter.png", "#category=Risk%20Curators", False),
 ]
 

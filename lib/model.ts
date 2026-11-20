@@ -120,6 +120,21 @@ export interface RadarRow {
   implied_value_usd: number;
   growth_multiplier: number;
   maturity_multiplier: number;
+  /** How this row's own number was reached: the measured multiple, its comparables and the basis sentence. */
+  model: RadarModelNote;
+}
+
+/** The one row's arithmetic, as the drawer states it: every input the implied value was built from. */
+export interface RadarModelNote {
+  base_multiple: number;
+  category_multiple: number | null;
+  category_comparables: number | null;
+  multiple_basis: string | null;
+  /** True when the row was priced off the all-market median because its own category had too few comparables. */
+  category_fallback: boolean | null;
+  growth_pct: number;
+  growth_multiplier: number;
+  maturity_multiplier: number;
 }
 
 /** A live-token protocol: it already trades, so the board shows the market's own value, not a model's. */
@@ -436,8 +451,9 @@ export function liveRows(snapshot: Snapshot): LiveRow[] {
     }));
 }
 
-/** A board row's compact form for data.js, with the farm plan generated in the page. */
-export function radarRow(row: BoardRow): RadarRow {
+/** A board row's compact form for data.js, with the farm plan generated in the page. `measured` is the set
+ * of categories whose own median was used, so a row priced off the all-market fallback says so. */
+export function radarRow(row: BoardRow, measured?: Set<string>): RadarRow {
   return {
     rank: row.rank,
     slug: row.slug,
@@ -452,12 +468,23 @@ export function radarRow(row: BoardRow): RadarRow {
     implied_value_usd: row.implied_value_usd,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
+    model: {
+      base_multiple: row.model.base_multiple,
+      category_multiple: typeof row.model.category_multiple === 'number' ? row.model.category_multiple : null,
+      category_comparables: typeof row.model.category_comparables === 'number' ? row.model.category_comparables : null,
+      multiple_basis: typeof row.model.multiple_basis === 'string' ? row.model.multiple_basis : null,
+      category_fallback: measured === undefined ? null : !measured.has(row.category ?? 'Uncategorised'),
+      growth_pct: row.model.growth_pct,
+      growth_multiplier: row.model.growth_multiplier,
+      maturity_multiplier: row.model.maturity_multiplier,
+    },
   };
 }
 
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
   const board = buildBoard(snapshot, model);
+  const measuredCategories = new Set(categoryMultiples(snapshot.protocols).byCategory.keys());
   const live = liveRows(snapshot);
   const early = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
   const radar: RadarData = {
@@ -470,7 +497,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     board_size: board.length,
     early_size: early,
     live_size: live.length,
-    rows: board.map(radarRow),
+    rows: board.map((r) => radarRow(r, measuredCategories)),
     live,
   };
   return { board, radar };
