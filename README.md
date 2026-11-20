@@ -35,7 +35,7 @@ a reader can check the basis instead of trusting the number.
 Node 22.18 or later, standard library only, no dependencies and no network.
 
 ```sh
-MAKEFUN_OUTPUT_DIR=out node main.ts --input input/snapshot.json
+MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
 ```
 
 That writes `out/board.json` (200 ranked rows), `out/data.js` (the dashboard's data),
