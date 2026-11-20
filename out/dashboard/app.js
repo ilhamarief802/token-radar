@@ -28,12 +28,16 @@
   }
   // The model in one function: the page recomputes a row from the snapshot figures and checks the
   // number board.json carries, so the page's code and the board's data are visibly the same arithmetic.
+  // The multiple is the row's OWN category multiple (measured from this snapshot), not one global constant.
+  function multipleOf(row, model) {
+    return row.model && typeof row.model.base_multiple === 'number' ? row.model.base_multiple : model.base_multiple;
+  }
   function impliedOf(row, model) {
     var growth = Math.min(model.growth_cap, Math.max(model.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
     var growthMult = 1 + (growth / 100) * model.growth_weight;
     var age = row.age_days === null || row.age_days === undefined ? model.unknown_age_days : row.age_days;
     var maturity = model.maturity_floor + (Math.min(Math.max(age, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
-    return Math.max(1, Math.round(row.tvl_usd * model.base_multiple * growthMult * maturity));
+    return Math.max(1, Math.round(row.tvl_usd * multipleOf(row, model) * growthMult * maturity));
   }
 
   function el(tag, attrs) {
@@ -283,11 +287,58 @@
 
   function modelPanel() {
     var m = DATA.model;
+    // The multiples are MEASURED from this snapshot: for every protocol that records both a market
+    // cap and a TVL, mcap/TVL is observed, and each category's median becomes that category's
+    // multiple. The table below is that measurement, so a reader can check the number instead of
+    // trusting it. Categories with fewer than three comparables fall back to the all-protocol median.
+    var byCat = {};
+    DATA.rows.forEach(function (r) {
+      var mm = r.model || {};
+      var key = r.category || 'Uncategorised';
+      var prev = byCat[key];
+      if (!prev) {
+        byCat[key] = { multiple: mm.category_multiple, n: mm.category_comparables, rows: 1, implied: r.implied_value_usd };
+      } else {
+        prev.rows += 1;
+        prev.implied += r.implied_value_usd;
+      }
+    });
+    var cats = Object.keys(byCat)
+      .filter(function (k) { return typeof byCat[k].multiple === 'number'; })
+      .sort(function (a, b) { return byCat[b].implied - byCat[a].implied; });
+    var totalImplied = DATA.rows.reduce(function (s, r) { return s + r.implied_value_usd; }, 0);
+
+    var rows = cats.map(function (k) {
+      var c = byCat[k];
+      var share = totalImplied > 0 ? (c.implied / totalImplied) * 100 : 0;
+      return el('tr', null,
+        el('td', { text: k }),
+        el('td', { class: 'num', text: 'x' + Number(c.multiple).toFixed(3) }),
+        el('td', { class: 'num', text: c.n === undefined || c.n === null ? 'fallback' : String(c.n) }),
+        el('td', { class: 'num', text: String(c.rows) }),
+        el('td', { class: 'num', text: share.toFixed(1) + '%' })
+      );
+    });
+
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
       el('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot figures. No protocol name is special-cased, and no row is hand-picked.' }),
       el('div', { class: 'formula' },
-        'implied = round( tvl_usd x ' + m.base_multiple + ' x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') )'
+        'implied = round( tvl_usd x category_multiple x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') )'
+      ),
+      el('p', { class: 'sub', text: 'The category multiple is not assumed: the snapshot itself carries protocols that already issued a token, with both a market cap and a TVL. Their mcap/TVL, taken as a median per category, is the multiple applied to the pre-token protocols in that category. A category with fewer than three comparables uses the median across every comparable protocol instead, and says so below.' }),
+      el('div', { class: 'table-wrap' },
+        el('table', null,
+          el('caption', { class: 'sub', text: 'Measured valuation basis, per category: the multiple, how many token-issuing comparables it rests on, and how much of the board it prices.' }),
+          el('thead', null, el('tr', null,
+            el('th', { scope: 'col', text: 'Category' }),
+            el('th', { scope: 'col', text: 'Multiple' }),
+            el('th', { scope: 'col', text: 'Comparables' }),
+            el('th', { scope: 'col', text: 'Board rows' }),
+            el('th', { scope: 'col', text: 'Share of value' })
+          )),
+          el('tbody', null, rows)
+        )
       ),
       el('p', { class: 'sub', text: 'TVL and seven-day growth come from the snapshot. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. The early radar is every pre-token protocol below the watchlist floor, by TVL, and the live-token protocols are set aside with their market caps shown.' })
     );
