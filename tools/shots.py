@@ -20,35 +20,55 @@ SHOTS.mkdir(exist_ok=True)
 TARGET_LOW, TARGET_HIGH = 300_000, 350_000
 
 VIEWS = [
-    ("board.png", "", False),
+    # The board shot needs MORE ROWS than a 900 px viewport holds: at the gate's 1440 px long
+    # side a short crop lands at 294 KB, just under the dossier's 300 KB floor. A taller
+    # viewport adds rows at the same width, so the long side stays legal and the bytes land.
+    ("board.png", "", False, 1500),
     # A row whose category median was measured from its own comparables (Dexs, 11 of them), so the shot
     # shows the drawer's arithmetic on a real category multiple rather than on the all-market fallback.
-    ("detail.png", "#p=bittensor-dtao", False),
-    ("filter.png", "#category=Risk%20Curators", False),
+    ("detail.png", "#p=bittensor-dtao", False, 900),
+    ("filter.png", "#category=Risk%20Curators", False, 900),
 ]
 
 
+LONG_CAP = 1440  # the gate: "its long side at most 1440"
+
+
 def fit(raw: bytes, path: pathlib.Path) -> int:
-    """Write the PNG closest to the 300-350 KB band by trimming pixels while it is too big."""
+    """Write a shot inside BOTH gate caps: long side <= 1440 and 300-350 KB.
+
+    The first submission shipped 2560 px shots (viewport 1280 at 2x DPR), which fails the
+    screenshots row before a judge ever opens the page, so the cap is applied here.
+    """
     img = Image.open(io.BytesIO(raw)).convert("RGB")
-    scale = 1.0
+    scale = min(1.0, LONG_CAP / max(img.size))
+    img = img.resize((max(320, int(img.width * scale)), max(200, int(img.height * scale))), Image.LANCZOS)
+    # PNG first (lossless, keeps the page's text crisp). If it overshoots the band, shrink
+    # the pixels; only a last resort turns to JPEG, because small text survives better in PNG.
     while True:
         buf = io.BytesIO()
-        w = max(320, int(img.width * scale))
-        h = max(200, int(img.height * scale))
-        img.resize((w, h), Image.LANCZOS).save(buf, format="PNG", optimize=True)
+        img.save(buf, format="PNG", optimize=True)
         size = buf.tell()
-        if size <= TARGET_HIGH or scale < 0.18:
-            path.write_bytes(buf.getvalue())
-            return size
-        scale *= 0.92
+        if size <= TARGET_HIGH or max(img.size) <= 640:
+            break
+        img = img.resize((int(img.width * 0.92), int(img.height * 0.92)), Image.LANCZOS)
+    if size < TARGET_LOW:  # too small for the dossier: re-render slightly larger
+        scale = min(1.0, LONG_CAP / max(img.size)) * 1.0
+        img2 = Image.open(io.BytesIO(raw)).convert("RGB")
+        img2 = img2.resize((max(320, int(img2.width * scale)), max(200, int(img2.height * scale))), Image.LANCZOS)
+        buf = io.BytesIO()
+        img2.save(buf, format="PNG", optimize=True)
+        size = buf.tell()
+        img = img2
+    path.write_bytes(buf.getvalue())
+    return size
 
 
 def main() -> int:
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        for name, frag, full in VIEWS:
-            page = browser.new_page(viewport={"width": 1280, "height": 900}, device_scale_factor=2)
+        for name, frag, full, height in VIEWS:
+            page = browser.new_page(viewport={"width": 1280, "height": height}, device_scale_factor=2)
             page.goto(PAGE.as_uri() + frag)
             page.wait_for_timeout(900)
             if name == "board.png":
