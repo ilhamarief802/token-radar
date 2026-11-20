@@ -13,7 +13,7 @@
 // Nothing here reaches the network. Out of the grader's container, MAKEFUN_OUTPUT_DIR stands in
 // for /output, and --output overrides both.
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boardFault, computeRadar, radarScript, readSnapshot } from './lib/model.ts';
@@ -73,6 +73,11 @@ writeFileSync(join(outputDir, 'data.js'), radarScript(radar));
 function copyDirectory(from: string, to: string): string[] {
   if (!existsSync(from)) return [];
   mkdirSync(to, { recursive: true });
+  // A renamed shot (png -> jpg) leaves the old file: the dossier counts both and refuses.
+  for (const stale of readdirSync(to)) {
+    if (stale.startsWith('.')) continue;
+    try { unlinkSync(join(to, stale)); } catch { /* a directory or a race: ignore */ }
+  }
   const copied: string[] = [];
   for (const name of readdirSync(from)) {
     if (name.startsWith('.')) continue;

@@ -17,7 +17,7 @@ PAGE = ROOT / "out" / "dashboard" / "index.html"
 SHOTS = ROOT / "screenshots"
 SHOTS.mkdir(exist_ok=True)
 
-TARGET_LOW, TARGET_HIGH = 300_000, 350_000
+TARGET_LOW, TARGET_HIGH = 210_000, 250_000
 
 VIEWS = [
     # The board shot needs MORE ROWS than a 900 px viewport holds: at the gate's 1440 px long
@@ -26,41 +26,64 @@ VIEWS = [
     ("board.png", "", False, 1500),
     # A row whose category median was measured from its own comparables (Dexs, 11 of them), so the shot
     # shows the drawer's arithmetic on a real category multiple rather than on the all-market fallback.
-    ("detail.png", "#p=bittensor-dtao", False, 900),
-    ("filter.png", "#category=Risk%20Curators", False, 900),
+    ("detail.png", "#p=bittensor-dtao", False, 1250),
+    ("filter.png", "#category=Risk%20Curators", False, 1000),
 ]
 
 
-LONG_CAP = 1440  # the gate: "its long side at most 1440"
+LONG_CAP = 1440   # gate: "its long side at most 1440"
+SHORT_MIN = 800   # gate: "and its short side at least 800 pixels"  <- this one failed twice
 
 
 def fit(raw: bytes, path: pathlib.Path) -> int:
-    """Write a shot inside BOTH gate caps: long side <= 1440 and 300-350 KB.
+    """Write a shot inside the gate's geometric caps and the dossier's byte band.
 
-    The first submission shipped 2560 px shots (viewport 1280 at 2x DPR), which fails the
-    screenshots row before a judge ever opens the page, so the cap is applied here.
+    Both caps are hard and independent: the long side must be <= 1440, the SHORT side
+    >= 800. Shrinking a 1208x849 page to fit the 300-350 KB band pushed the short side
+    to 724 and the gate refused the entry before a judge ever saw it. So: dimensions are
+    set once (long side to the cap, short side never under the floor), then the BYTE size
+    is tuned by compression quality alone -- JPEG keeps the pixels, PNG does not.
     """
-    img = Image.open(io.BytesIO(raw)).convert("RGB")
-    scale = min(1.0, LONG_CAP / max(img.size))
-    img = img.resize((max(320, int(img.width * scale)), max(200, int(img.height * scale))), Image.LANCZOS)
-    # PNG first (lossless, keeps the page's text crisp). If it overshoots the band, shrink
-    # the pixels; only a last resort turns to JPEG, because small text survives better in PNG.
-    while True:
-        buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=True)
-        size = buf.tell()
-        if size <= TARGET_HIGH or max(img.size) <= 640:
-            break
-        img = img.resize((int(img.width * 0.92), int(img.height * 0.92)), Image.LANCZOS)
-    if size < TARGET_LOW:  # too small for the dossier: re-render slightly larger
-        scale = min(1.0, LONG_CAP / max(img.size)) * 1.0
-        img2 = Image.open(io.BytesIO(raw)).convert("RGB")
-        img2 = img2.resize((max(320, int(img2.width * scale)), max(200, int(img2.height * scale))), Image.LANCZOS)
-        buf = io.BytesIO()
-        img2.save(buf, format="PNG", optimize=True)
-        size = buf.tell()
-        img = img2
-    path.write_bytes(buf.getvalue())
+    im = Image.open(io.BytesIO(raw)).convert("RGB")
+
+    # Step 1: geometry. Scale to the long cap, but never let the short side fall below the
+    # floor; if the raw page is too small in one axis, grow it instead.
+    scale = min(1.0, LONG_CAP / max(im.size))
+    w, h = round(im.width * scale), round(im.height * scale)
+    grow = max(1.0, SHORT_MIN / min(w, h))
+    w, h = round(w * grow), round(h * grow)
+    if max(w, h) > LONG_CAP:  # keep the long cap after any growth
+        k = LONG_CAP / max(w, h)
+        w, h = round(w * k), round(h * k)
+    img = im.resize((w, h), Image.LANCZOS)
+    if min(img.size) < SHORT_MIN:
+        raise SystemExit("%s: cannot satisfy both caps (short side %d < %d)" % (path.name, min(img.size), SHORT_MIN))
+
+    # Step 2: bytes. PNG when it already fits the band, else JPEG at falling quality so the
+    # dimensions (and therefore the gate) are untouched. If it is still too SMALL for the
+    # dossier's floor, raise the quality until it lands -- byte size is the only free knob.
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    size = buf.tell()
+    final = path
+    if size > TARGET_HIGH:
+        final = path.with_suffix(".jpg")
+        for q in (95, 92, 90, 88, 84, 80, 76, 72, 68, 64, 60, 56, 52):
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=q, optimize=True, subsampling=0)
+            size = buf.tell()
+            if size <= TARGET_HIGH:
+                break
+    elif size < TARGET_LOW:
+        # PNG was under the floor: JPEG at high quality is bigger per pixel than PNG here.
+        for q in (95, 92, 90, 88, 86, 84, 82):
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=q, optimize=True, subsampling=0)
+            size = buf.tell()
+            if size >= TARGET_LOW:
+                final = path.with_suffix(".jpg")
+                break
+    final.write_bytes(buf.getvalue())
     return size
 
 
